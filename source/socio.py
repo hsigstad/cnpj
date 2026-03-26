@@ -4,7 +4,7 @@ Handles two formats:
 - 2018: single CSV with header, comma-delimited, full 14-digit CNPJ
 - 2023+: 10 sharded CSVs without header, semicolon-delimited, 8-digit CNPJ base
 
-Output: build/clean/cnpj_socio_{YYYYMM}.parquet
+Output: build/clean/socio_{YYYYMM}.parquet
   One file per snapshot. Grain: (cnpj, cpf_cnpj_socio, snapshot).
 
 Usage:
@@ -202,7 +202,7 @@ def _normalize(df: pd.DataFrame, snapshot_label: str) -> pd.DataFrame:
 def process_snapshot(snapshot_dir: str) -> None:
     """Process one snapshot and write parquet."""
     label = SNAPSHOTS[snapshot_dir]
-    out_path = BUILD_DIR / f"cnpj_socio_{snapshot_dir}.parquet"
+    out_path = BUILD_DIR / f"socio_{snapshot_dir}.parquet"
 
     if out_path.exists():
         print(f"  {out_path.name} already exists, skipping (use --force)")
@@ -240,7 +240,7 @@ def main() -> int:
     if args.force:
         # Remove existing files so they get rebuilt
         for sd in (SNAPSHOTS if args.snapshot is None else {args.snapshot: ""}):
-            p = BUILD_DIR / f"cnpj_socio_{sd}.parquet"
+            p = BUILD_DIR / f"socio_{sd}.parquet"
             if p.exists():
                 p.unlink()
 

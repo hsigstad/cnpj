@@ -32,13 +32,15 @@ Clean parquet files in `build/clean/`:
 
 | Table | Script | Grain | Key |
 |---|---|---|---|
-| `cnpj_socio.parquet` | `source/cnpj_socio.py` | (CNPJ, partner CPF/CNPJ, snapshot) | `cnpj` + `cpf_cnpj_socio` + `snapshot` |
-| `cnpj_empresa.parquet` | `source/cnpj_empresa.py` | (CNPJ, snapshot) | `cnpj` + `snapshot` |
-| `cnpj_cnae.parquet` | `source/cnpj_cnae.py` | (CNPJ, CNAE, snapshot) | `cnpj` + `cnae` + `snapshot` |
+| `cnpj_{YYYYMM}.parquet` | `source/cnpj.py` | One per CNPJ root (8-digit) | `cnpj_base` |
+| `estabelecimento_{YYYYMM}.parquet` | `source/estabelecimento.py` | One per branch (14-digit) | `cnpj` |
+| `socio_{YYYYMM}.parquet` | `source/socio.py` | (CNPJ, partner) | `cnpj_base` + `cpf_cnpj_socio` |
+| `cnpj_cnae_{YYYYMM}.parquet` | `source/cnpj_cnae.py` | (CNPJ, CNAE code) | `cnpj` + `cnae` |
+| `cnae.parquet` | `source/cnae.py` | One per CNAE code | `cnae` (lookup table with descriptions) |
 
-All tables include a `snapshot` column (YYYY-MM format, e.g. "2018-12")
-identifying which bulk download the record came from. This enables panel
-analysis across snapshots.
+One output file per snapshot (YYYYMM suffix). All tables include a
+`snapshot` column (YYYY-MM format, e.g. "2018-12") identifying which
+bulk download the record came from.
 
 ## Conventions
 
