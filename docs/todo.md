@@ -1,27 +1,48 @@
 # TODOs
 
-## Setup
+## Completed
 
-- [ ] Verify format of 2023, 2024, 2025 snapshots
-  - May differ from 2018 (separate CSVs vs. nested zips, different column names).
-    Need to check each and handle format differences in the parsing code.
+- [x] Verify format of 2023, 2024, 2025 snapshots
+  - 2023+ uses separate sharded CSVs (Empresas0-9, Socios0-9,
+    Estabelecimentos0-9), semicolon-delimited, no header, 8-digit
+    CNPJ base. 2018 uses single CSV with header, comma-delimited,
+    14-digit CNPJ. first-version snapshot is SQLite DB (~Jan 2020).
+  - completed: 2026-03-26
+
+- [x] Build socio.py — all 5 snapshots complete
+  - completed: 2026-03-26
+
+- [x] Build cnpj.py — 4 of 5 snapshots complete (202001 blocked by disk)
+  - completed: 2026-03-26
+
+- [x] Build cnae.py — 3 snapshots (2023, 2024, 2025)
+  - completed: 2026-03-26
+
+- [x] Extract Receita Federal municipality code mapping
+  - Extracted from first-version SQLite DB → `source/municipio_receita.csv`
+    (5,572 codes). Still need Receita → IBGE crosswalk.
+  - completed: 2026-03-26
+
+## Remaining
+
+- [ ] Run cnpj.py for 202001 snapshot
+  - Blocked by disk space (needs 19 GB free for SQLite extraction).
   - created: 2026-03-26
 
-- [ ] Find Receita Federal → IBGE municipality code mapping
-  - CNPJ data uses 4-digit Receita codes, not 7-digit IBGE codes. Need a
-    crosswalk table for merging with procurement data.
+- [ ] Run estabelecimento.py for all 5 snapshots
+  - Code written and tested (2023 loaded all 10 shards before OOM).
+    Largest table (~55M+ rows per snapshot). Needs disk space.
   - created: 2026-03-26
 
-## Pipeline code
-
-- [ ] Build cnpj_socio.py (highest priority)
-  - Parse sócio records from all snapshots → `build/clean/cnpj_socio.parquet`
+- [ ] Run cnpj_cnae.py for all 5 snapshots
+  - Code written, not yet tested. Lower priority.
   - created: 2026-03-26
 
-- [ ] Build cnpj_empresa.py
-  - Parse empresa records from all snapshots → `build/clean/cnpj_empresa.parquet`
+- [ ] Build Receita → IBGE municipality code crosswalk
+  - Have Receita codes in `source/municipio_receita.csv`. Need to
+    match to IBGE 7-digit codes for merging with procurement data.
+    May already exist in `pipelines/brazil` (municipio table).
   - created: 2026-03-26
 
-- [ ] Build cnpj_cnae.py
-  - Parse secondary CNAE records → `build/clean/cnpj_cnae.parquet`
+- [ ] Create GitHub repo and push
   - created: 2026-03-26
