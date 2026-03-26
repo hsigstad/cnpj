@@ -12,7 +12,15 @@
 - `20230418.zip` — Apr 2023 (5.6 GB). Format TBD.
 - `20240812.zip` — Aug 2024 (6.1 GB). Format TBD.
 - `202505.zip` — May 2025 (6.5 GB). Format TBD.
-- `first_version.zip` — pre-built SQLite DB (19 GB). Contains `CNPJ_full.db`, schema diagram, layout PDF. Reference only.
+- `first_version.zip` — pre-built SQLite DB (19 GB).
+  Contains `CNPJ_full.db` (3 tables: empresas, socios, cnaes_secundarios),
+  schema diagram (`esquema_cnpj.png`), and layout PDF. **NOT a 2018
+  snapshot** despite the 2018 layout PDF — latest dates in DB go up to
+  2020-01-24, making this a ~Jan 2020 snapshot. Row counts differ from
+  201812.zip: 26.8M sócios (vs 18.4M in 201812) and 43.1M empresas.
+  Used only as reference for municipality code mapping (no lookup tables
+  in the raw zip snapshots). Municipality mapping extracted to
+  `source/municipio_receita.csv` (5,572 codes).
 
 ### Raw record layout (2018 format)
 
@@ -67,7 +75,11 @@ The 2018 layout uses fixed-width 1200-char records with 3 types:
 ### Notes
 - The 2018 data was exported as CSVs (not raw fixed-width) despite the fixed-width layout spec
 - Later snapshots (2023+) use a different format — separate CSV files per table with different column names. Need to verify format for each.
-- Municipality codes in CNPJ use Receita Federal codes, NOT IBGE codes. Need a mapping table.
+- Municipality codes in CNPJ use Receita Federal 4-digit codes, NOT IBGE
+  7-digit codes. Mapping extracted from first-version snapshot DB to
+  `source/municipio_receita.csv` (5,572 unique codes with municipality
+  name and UF). Need to cross-reference with IBGE codes for merging with
+  procurement data. Example: São Paulo city = Receita 7107.
 
 ## Output: clean parquet tables
 
