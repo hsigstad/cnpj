@@ -30,10 +30,56 @@ BUILD_DIR = Path(__file__).resolve().parents[1] / "build" / "clean"
 
 SNAPSHOTS = {
     "201812": "2018-12",
+    "202001": "2020-01",  # estimated date — see docs/decisions.md
     "20230418": "2023-04",
     "20240812": "2024-08",
     "202505": "2025-05",
 }
+
+SQLITE_SNAPSHOTS = {"202001"}
+SQLITE_ZIP = "first_version.zip"
+SQLITE_DB_NAME = "first_version/CNPJ_full.db"
+
+
+def _read_sqlite(snapshot_dir: str) -> pd.DataFrame:
+    """Read secondary CNAEs from SQLite DB (~Jan 2020)."""
+    import sqlite3
+    import subprocess
+    import tempfile
+
+    outer_zip = DATA_DIR / SQLITE_ZIP
+    with tempfile.TemporaryDirectory() as tmp:
+        print("  Extracting SQLite DB (19 GB) ...", flush=True)
+        subprocess.run(
+            ["unzip", "-o", str(outer_zip), SQLITE_DB_NAME, "-d", tmp],
+            check=True, capture_output=True,
+        )
+        db_path = Path(tmp) / SQLITE_DB_NAME
+
+        print("  Querying cnaes_secundarios ...", flush=True)
+        conn = sqlite3.connect(str(db_path))
+        df = pd.read_sql_query(
+            "SELECT * FROM cnaes_secundarios", conn, dtype=str,
+        )
+        conn.close()
+        print(f"  {len(df):,} rows from SQLite")
+
+    df.columns = [c.strip().lower() for c in df.columns]
+
+    # Same format as 2018 CSV — CNPJ + multiple CNAE columns
+    cnpj_col = df.columns[0]
+    cnae_cols = [c for c in df.columns if c != cnpj_col]
+
+    rows = []
+    for _, row in df.iterrows():
+        cnpj = str(row[cnpj_col]).strip().zfill(14)
+        cnpj_base = cnpj[:8]
+        for col in cnae_cols:
+            val = str(row[col]).strip()
+            if val and val != "nan" and val != "0000000" and len(val) >= 5:
+                rows.append({"cnpj": cnpj, "cnpj_base": cnpj_base, "cnae": val})
+
+    return pd.DataFrame(rows)
 
 
 def _read_2018(snapshot_dir: str) -> pd.DataFrame:
@@ -147,7 +193,9 @@ def process_snapshot(snapshot_dir: str, force: bool = False) -> None:
 
     print(f"Processing {snapshot_dir} ({label}) ...")
 
-    if snapshot_dir == "201812":
+    if snapshot_dir in SQLITE_SNAPSHOTS:
+        df = _read_sqlite(snapshot_dir)
+    elif snapshot_dir == "201812":
         df = _read_2018(snapshot_dir)
     else:
         df = _read_new(snapshot_dir)

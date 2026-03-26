@@ -28,10 +28,15 @@ BUILD_DIR = Path(__file__).resolve().parents[1] / "build" / "clean"
 
 SNAPSHOTS = {
     "201812": "2018-12",
+    "202001": "2020-01",  # estimated date — see docs/decisions.md
     "20230418": "2023-04",
     "20240812": "2024-08",
     "202505": "2025-05",
 }
+
+SQLITE_SNAPSHOTS = {"202001"}
+SQLITE_ZIP = "first_version.zip"
+SQLITE_DB_NAME = "first_version/CNPJ_full.db"
 
 # 2023+ Estabelecimentos columns (no header, semicolon-delimited, 30 cols)
 COLS_NEW = [
@@ -85,13 +90,26 @@ def _read_2018(snapshot_dir: str) -> pd.DataFrame:
         csv_files = [f for f in Path(tmp).glob("*.csv")]
         if not csv_files:
             raise FileNotFoundError("No CSV found in empresas.zip")
-        print(f"  Reading {csv_files[0].name} ...", flush=True)
-        df = pd.read_csv(
+        # Read in chunks — full CSV is ~12 GB
+        use_cols = {
+            "cnpj", "matriz_filial", "nome_fantasia",
+            "situacao", "data_situacao", "motivo_situacao",
+            "data_inicio_ativ", "cnae_fiscal",
+            "logradouro", "numero", "bairro", "cep", "uf",
+            "cod_municipio", "municipio",
+        }
+        print(f"  Reading {csv_files[0].name} in chunks ...", flush=True)
+        chunks = []
+        for i, chunk in enumerate(pd.read_csv(
             csv_files[0], dtype=str, low_memory=False,
-            encoding="latin-1",
-        )
+            encoding="latin-1", chunksize=2_000_000,
+            usecols=lambda c: c.strip().strip('"').lower() in use_cols,
+        )):
+            chunk.columns = [c.strip().strip('"').lower() for c in chunk.columns]
+            chunks.append(chunk)
+            print(f"    chunk {i}: {len(chunk):,} rows", flush=True)
 
-    df.columns = [c.strip().strip('"').lower() for c in df.columns]
+    df = pd.concat(chunks, ignore_index=True)
 
     # Build full CNPJ
     df["cnpj"] = df["cnpj"].str.strip().str.strip('"').str.zfill(14)
@@ -112,6 +130,46 @@ def _read_2018(snapshot_dir: str) -> pd.DataFrame:
         "uf": "uf",
         "cod_municipio": "cod_municipio",
         "municipio": "municipio",
+    }
+    df = df.rename(columns=rename)
+    return df
+
+
+def _read_sqlite(snapshot_dir: str) -> pd.DataFrame:
+    """Read estabelecimento records from SQLite DB (~Jan 2020)."""
+    import sqlite3
+
+    outer_zip = DATA_DIR / SQLITE_ZIP
+    with tempfile.TemporaryDirectory() as tmp:
+        print("  Extracting SQLite DB (19 GB) ...", flush=True)
+        subprocess.run(
+            ["unzip", "-o", str(outer_zip), SQLITE_DB_NAME, "-d", tmp],
+            check=True, capture_output=True,
+        )
+        db_path = Path(tmp) / SQLITE_DB_NAME
+
+        print("  Querying empresas ...", flush=True)
+        conn = sqlite3.connect(str(db_path))
+        df = pd.read_sql_query(
+            "SELECT cnpj, matriz_filial, nome_fantasia, "
+            "situacao, data_situacao, motivo_situacao, "
+            "data_inicio_ativ, cnae_fiscal, "
+            "logradouro, numero, bairro, cep, uf, "
+            "cod_municipio, municipio "
+            "FROM empresas",
+            conn, dtype=str,
+        )
+        conn.close()
+        print(f"  {len(df):,} rows from SQLite")
+
+    df.columns = [c.strip().lower() for c in df.columns]
+    df["cnpj"] = df["cnpj"].str.zfill(14)
+    df["cnpj_base"] = df["cnpj"].str[:8]
+
+    rename = {
+        "situacao": "situacao_cadastral",
+        "data_inicio_ativ": "data_inicio",
+        "cnae_fiscal": "cnae_principal",
     }
     df = df.rename(columns=rename)
     return df
@@ -213,7 +271,9 @@ def process_snapshot(snapshot_dir: str, force: bool = False) -> None:
 
     print(f"Processing {snapshot_dir} ({label}) ...")
 
-    if snapshot_dir == "201812":
+    if snapshot_dir in SQLITE_SNAPSHOTS:
+        df = _read_sqlite(snapshot_dir)
+    elif snapshot_dir == "201812":
         df = _read_2018(snapshot_dir)
     else:
         df = _read_new(snapshot_dir)
