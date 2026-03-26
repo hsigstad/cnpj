@@ -29,10 +29,15 @@ BUILD_DIR = Path(__file__).resolve().parents[1] / "build" / "clean"
 
 SNAPSHOTS = {
     "201812": "2018-12",
+    "202001": "2020-01",  # estimated date — see docs/decisions.md
     "20230418": "2023-04",
     "20240812": "2024-08",
     "202505": "2025-05",
 }
+
+SQLITE_SNAPSHOTS = {"202001"}
+SQLITE_ZIP = "first_version.zip"
+SQLITE_DB_NAME = "first_version/CNPJ_full.db"
 
 # 2023+ Empresas columns (no header, semicolon-delimited)
 COLS_NEW = [
@@ -95,6 +100,52 @@ def _read_2018(snapshot_dir: str) -> pd.DataFrame:
             print(f"    chunk {i}: {len(chunk):,} matriz rows", flush=True)
 
     df = pd.concat(chunks, ignore_index=True)
+    df = df.drop_duplicates(subset=["cnpj_base"], keep="first")
+
+    rename = {
+        "razao_social": "razao_social",
+        "nome_fantasia": "nome_fantasia",
+        "cod_nat_juridica": "natureza_juridica",
+        "qualif_resp": "qualificacao_responsavel",
+        "capital_social": "capital_social",
+        "porte": "porte",
+    }
+    df = df.rename(columns=rename)
+    return df
+
+
+def _read_sqlite(snapshot_dir: str) -> pd.DataFrame:
+    """Read empresa records from SQLite DB (first-version snapshot, ~Jan 2020).
+
+    Same column layout as 2018 CSV. Extracts DB to temp, queries matriz
+    rows only, then deletes.
+    """
+    import subprocess
+    import tempfile
+
+    outer_zip = DATA_DIR / SQLITE_ZIP
+    with tempfile.TemporaryDirectory() as tmp:
+        print("  Extracting SQLite DB (19 GB) ...", flush=True)
+        subprocess.run(
+            ["unzip", "-o", str(outer_zip), SQLITE_DB_NAME, "-d", tmp],
+            check=True, capture_output=True,
+        )
+        db_path = Path(tmp) / SQLITE_DB_NAME
+
+        print("  Querying empresas (matriz only) ...", flush=True)
+        import sqlite3
+        conn = sqlite3.connect(str(db_path))
+        df = pd.read_sql_query(
+            "SELECT cnpj, matriz_filial, razao_social, nome_fantasia, "
+            "cod_nat_juridica, qualif_resp, capital_social, porte "
+            "FROM empresas WHERE matriz_filial = '1'",
+            conn, dtype=str,
+        )
+        conn.close()
+        print(f"  {len(df):,} matriz rows from SQLite")
+
+    df.columns = [c.strip().lower() for c in df.columns]
+    df["cnpj_base"] = df["cnpj"].str.zfill(14).str[:8]
     df = df.drop_duplicates(subset=["cnpj_base"], keep="first")
 
     rename = {
@@ -189,7 +240,9 @@ def process_snapshot(snapshot_dir: str, force: bool = False) -> None:
 
     print(f"Processing {snapshot_dir} ({label}) ...")
 
-    if snapshot_dir == "201812":
+    if snapshot_dir in SQLITE_SNAPSHOTS:
+        df = _read_sqlite(snapshot_dir)
+    elif snapshot_dir == "201812":
         df = _read_2018(snapshot_dir)
     else:
         df = _read_new(snapshot_dir)

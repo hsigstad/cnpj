@@ -1,21 +1,25 @@
 """Parse sócio (partner/owner) records from CNPJ bulk snapshots.
 
-Handles two formats:
+Handles three formats:
 - 2018: single CSV with header, comma-delimited, full 14-digit CNPJ
+- 202001: SQLite DB (first_version.zip) — estimated Jan 2020
 - 2023+: 10 sharded CSVs without header, semicolon-delimited, 8-digit CNPJ base
 
 Output: build/clean/socio_{YYYYMM}.parquet
   One file per snapshot. Grain: (cnpj, cpf_cnpj_socio, snapshot).
 
 Usage:
-    python3 -m source.cnpj_socio                    # all snapshots
-    python3 -m source.cnpj_socio --snapshot 201812  # one snapshot
+    python3 -m source.socio                    # all snapshots
+    python3 -m source.socio --snapshot 201812  # one snapshot
 """
 
 from __future__ import annotations
 
 import argparse
 import io
+import sqlite3
+import tempfile
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -29,10 +33,16 @@ BUILD_DIR = Path(__file__).resolve().parents[1] / "build" / "clean"
 # Snapshot directory names → snapshot label
 SNAPSHOTS = {
     "201812": "2018-12",
+    "202001": "2020-01",  # estimated date — see docs/decisions.md
     "20230418": "2023-04",
     "20240812": "2024-08",
     "202505": "2025-05",
 }
+
+# SQLite-based snapshots (first-version DB, different read path)
+SQLITE_SNAPSHOTS = {"202001"}
+SQLITE_ZIP = "first_version.zip"
+SQLITE_DB_NAME = "first_version/CNPJ_full.db"
 
 # ── Column definitions ────────────────────────────────────────────────
 
@@ -98,6 +108,49 @@ def _read_2018(snapshot_dir: str) -> pd.DataFrame:
     df.columns = [c.strip().strip('"').lower() for c in df.columns]
 
     # Map to standard names
+    rename = {
+        "cnpj": "cnpj",
+        "tipo_socio": "tipo_socio",
+        "nome_socio": "nome_socio",
+        "cnpj_cpf_socio": "cpf_cnpj_socio",
+        "cod_qualificacao": "qualificacao",
+        "perc_capital": "_drop_perc",
+        "data_entrada": "data_entrada",
+        "cod_pais_ext": "cod_pais",
+        "nome_pais_ext": "_drop_pais",
+        "cpf_repres": "cpf_representante",
+        "nome_repres": "nome_representante",
+        "cod_qualif_repres": "qualificacao_representante",
+    }
+    df = df.rename(columns=rename)
+    return df
+
+
+def _read_sqlite(snapshot_dir: str) -> pd.DataFrame:
+    """Read sócios from SQLite DB (first-version snapshot, ~Jan 2020).
+
+    Extracts the 19 GB DB to a temp directory, queries it, then deletes.
+    Same column layout as 2018 CSV format (full 14-digit CNPJ).
+    """
+    outer_zip = DATA_DIR / SQLITE_ZIP
+
+    # Extract DB to temp (19 GB uncompressed, stored without compression)
+    with tempfile.TemporaryDirectory() as tmp:
+        print("  Extracting SQLite DB (19 GB) ...", flush=True)
+        subprocess.run(
+            ["unzip", "-o", str(outer_zip), SQLITE_DB_NAME, "-d", tmp],
+            check=True, capture_output=True,
+        )
+        db_path = Path(tmp) / SQLITE_DB_NAME
+
+        print("  Querying socios table ...", flush=True)
+        conn = sqlite3.connect(str(db_path))
+        df = pd.read_sql_query("SELECT * FROM socios", conn, dtype=str)
+        conn.close()
+        print(f"  {len(df):,} rows from SQLite")
+
+    # Column names match 2018 CSV format
+    df.columns = [c.strip().lower() for c in df.columns]
     rename = {
         "cnpj": "cnpj",
         "tipo_socio": "tipo_socio",
@@ -210,7 +263,9 @@ def process_snapshot(snapshot_dir: str) -> None:
 
     print(f"Processing {snapshot_dir} ({label}) ...")
 
-    if snapshot_dir == "201812":
+    if snapshot_dir in SQLITE_SNAPSHOTS:
+        df = _read_sqlite(snapshot_dir)
+    elif snapshot_dir == "201812":
         df = _read_2018(snapshot_dir)
     else:
         df = _read_new(snapshot_dir)
