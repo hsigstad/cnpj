@@ -66,20 +66,25 @@ def _read_sqlite(snapshot_dir: str) -> pd.DataFrame:
 
     df.columns = [c.strip().lower() for c in df.columns]
 
-    # Same format as 2018 CSV — CNPJ + multiple CNAE columns
     cnpj_col = df.columns[0]
     cnae_cols = [c for c in df.columns if c != cnpj_col]
 
-    rows = []
-    for _, row in df.iterrows():
-        cnpj = str(row[cnpj_col]).strip().zfill(14)
-        cnpj_base = cnpj[:8]
-        for col in cnae_cols:
-            val = str(row[col]).strip()
-            if val and val != "nan" and val != "0000000" and len(val) >= 5:
-                rows.append({"cnpj": cnpj, "cnpj_base": cnpj_base, "cnae": val})
-
-    return pd.DataFrame(rows)
+    # Vectorized melt
+    df[cnpj_col] = df[cnpj_col].str.strip().str.zfill(14)
+    melted = df.melt(id_vars=[cnpj_col], value_vars=cnae_cols, value_name="cnae")
+    melted = melted.drop(columns=["variable"])
+    melted = melted.rename(columns={cnpj_col: "cnpj"})
+    melted["cnae"] = melted["cnae"].astype(str).str.strip()
+    melted = melted[
+        melted["cnae"].notna()
+        & (melted["cnae"] != "")
+        & (melted["cnae"] != "nan")
+        & (melted["cnae"] != "0000000")
+        & (melted["cnae"].str.len() >= 5)
+    ]
+    melted["cnpj_base"] = melted["cnpj"].str[:8]
+    print(f"  {len(melted):,} CNAE entries from SQLite")
+    return melted
 
 
 def _read_2018(snapshot_dir: str) -> pd.DataFrame:
@@ -98,21 +103,25 @@ def _read_2018(snapshot_dir: str) -> pd.DataFrame:
 
     df.columns = [c.strip().strip('"').lower() for c in df.columns]
 
-    # Expect columns like cnpj + cnae columns
-    # The 2018 format stores up to 99 CNAEs as separate columns
-    cnpj_col = df.columns[0]  # first column is CNPJ
+    cnpj_col = df.columns[0]
     cnae_cols = [c for c in df.columns if c != cnpj_col]
 
-    rows = []
-    for _, row in df.iterrows():
-        cnpj = str(row[cnpj_col]).strip().strip('"').zfill(14)
-        cnpj_base = cnpj[:8]
-        for col in cnae_cols:
-            val = str(row[col]).strip().strip('"')
-            if val and val != "nan" and val != "0000000" and len(val) >= 5:
-                rows.append({"cnpj": cnpj, "cnpj_base": cnpj_base, "cnae": val})
-
-    return pd.DataFrame(rows)
+    # Vectorized melt: wide → long
+    df[cnpj_col] = df[cnpj_col].str.strip().str.strip('"').str.zfill(14)
+    melted = df.melt(id_vars=[cnpj_col], value_vars=cnae_cols, value_name="cnae")
+    melted = melted.drop(columns=["variable"])
+    melted = melted.rename(columns={cnpj_col: "cnpj"})
+    melted["cnae"] = melted["cnae"].str.strip().str.strip('"')
+    melted = melted[
+        melted["cnae"].notna()
+        & (melted["cnae"] != "")
+        & (melted["cnae"] != "nan")
+        & (melted["cnae"] != "0000000")
+        & (melted["cnae"].str.len() >= 5)
+    ]
+    melted["cnpj_base"] = melted["cnpj"].str[:8]
+    print(f"  {len(melted):,} CNAE entries from melt")
+    return melted
 
 
 def _read_new(snapshot_dir: str) -> pd.DataFrame:
@@ -121,7 +130,7 @@ def _read_new(snapshot_dir: str) -> pd.DataFrame:
     The cnae_secundario field contains comma-separated CNAE codes.
     """
     outer_zip = DATA_DIR / f"{snapshot_dir}.zip"
-    rows = []
+    parts = []
 
     with zipfile.ZipFile(outer_zip, "r") as outer:
         shard_names = sorted(
@@ -136,7 +145,6 @@ def _read_new(snapshot_dir: str) -> pd.DataFrame:
                 with zipfile.ZipFile(io.BytesIO(shard_f.read()), "r") as shard:
                     csv_name = shard.namelist()[0]
                     with shard.open(csv_name) as csv_f:
-                        # Only read columns we need: 0=cnpj_base, 12=cnae_secundario
                         chunk = pd.read_csv(
                             csv_f, sep=";", header=None,
                             usecols=[0, 1, 2, 12],
@@ -153,22 +161,22 @@ def _read_new(snapshot_dir: str) -> pd.DataFrame:
                 + chunk["cnpj_dv"].str.strip().str.strip('"').str.zfill(2)
             )
 
-            # Explode comma-separated CNAEs
-            cnae_vals = chunk["cnae_sec"].str.strip().str.strip('"')
-            count = 0
-            for idx, (cnpj, cnpj_base, cnaes) in enumerate(
-                zip(chunk["cnpj"], chunk["cnpj_base"], cnae_vals)
-            ):
-                if pd.isna(cnaes) or not cnaes or cnaes == "0000000":
-                    continue
-                for cnae in cnaes.split(","):
-                    cnae = cnae.strip()
-                    if cnae and cnae != "0000000" and len(cnae) >= 5:
-                        rows.append({"cnpj": cnpj, "cnpj_base": cnpj_base, "cnae": cnae})
-                        count += 1
-            print(f"{count:,} CNAE entries")
+            # Vectorized explode of comma-separated CNAEs
+            cnae_col = chunk["cnae_sec"].str.strip().str.strip('"')
+            chunk["cnae_list"] = cnae_col.str.split(",")
+            exploded = chunk[["cnpj", "cnpj_base", "cnae_list"]].explode("cnae_list")
+            exploded = exploded.rename(columns={"cnae_list": "cnae"})
+            exploded["cnae"] = exploded["cnae"].str.strip()
+            exploded = exploded[
+                exploded["cnae"].notna()
+                & (exploded["cnae"] != "")
+                & (exploded["cnae"] != "0000000")
+                & (exploded["cnae"].str.len() >= 5)
+            ]
+            parts.append(exploded[["cnpj", "cnpj_base", "cnae"]])
+            print(f"{len(exploded):,} CNAE entries")
 
-    return pd.DataFrame(rows)
+    return pd.concat(parts, ignore_index=True)
 
 
 def _normalize(df: pd.DataFrame, snapshot_label: str) -> pd.DataFrame:
