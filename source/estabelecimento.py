@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 import io
+import subprocess
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -138,7 +140,6 @@ def _read_2018(snapshot_dir: str) -> pd.DataFrame:
 def _read_sqlite(snapshot_dir: str) -> pd.DataFrame:
     """Read estabelecimento records from SQLite DB (~Jan 2020)."""
     import sqlite3
-
     outer_zip = DATA_DIR / SQLITE_ZIP
     with tempfile.TemporaryDirectory() as tmp:
         print("  Extracting SQLite DB (19 GB) ...", flush=True)
