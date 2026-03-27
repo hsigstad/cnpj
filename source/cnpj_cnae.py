@@ -108,7 +108,10 @@ def _read_2018(snapshot_dir: str) -> pd.DataFrame:
 
     # Vectorized melt: wide → long
     df[cnpj_col] = df[cnpj_col].str.strip().str.strip('"').str.zfill(14)
-    melted = df.melt(id_vars=[cnpj_col], value_vars=cnae_cols, value_name="cnae")
+    # Rename any existing "cnae" column to avoid conflict with value_name
+    df = df.rename(columns={c: f"_col_{i}" for i, c in enumerate(cnae_cols)})
+    cnae_cols_renamed = [f"_col_{i}" for i in range(len(cnae_cols))]
+    melted = df.melt(id_vars=[cnpj_col], value_vars=cnae_cols_renamed, value_name="cnae")
     melted = melted.drop(columns=["variable"])
     melted = melted.rename(columns={cnpj_col: "cnpj"})
     melted["cnae"] = melted["cnae"].str.strip().str.strip('"')
