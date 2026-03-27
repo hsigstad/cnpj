@@ -175,10 +175,37 @@ def _read_sqlite(snapshot_dir: str) -> pd.DataFrame:
     return df
 
 
-def _read_new(snapshot_dir: str) -> pd.DataFrame:
-    """Read 2023+-format Estabelecimentos from sharded inner zips."""
+def _read_new_shard(outer: zipfile.ZipFile, shard_name: str) -> pd.DataFrame:
+    """Read and normalize one estabelecimento shard."""
+    with outer.open(shard_name) as shard_f:
+        with zipfile.ZipFile(io.BytesIO(shard_f.read()), "r") as shard:
+            csv_name = shard.namelist()[0]
+            with shard.open(csv_name) as csv_f:
+                chunk = pd.read_csv(
+                    csv_f, sep=";", header=None,
+                    names=COLS_NEW, dtype=str,
+                    low_memory=False, encoding="latin-1",
+                )
+
+    # Build full 14-digit CNPJ from base + ordem + dv
+    chunk["cnpj_base"] = chunk["cnpj_base"].str.strip().str.strip('"').str.zfill(8)
+    chunk["cnpj_ordem"] = chunk["cnpj_ordem"].str.strip().str.strip('"').str.zfill(4)
+    chunk["cnpj_dv"] = chunk["cnpj_dv"].str.strip().str.strip('"').str.zfill(2)
+    chunk["cnpj"] = chunk["cnpj_base"] + chunk["cnpj_ordem"] + chunk["cnpj_dv"]
+
+    return chunk
+
+
+def _process_new_incremental(snapshot_dir: str, snapshot_label: str,
+                              out_path: Path) -> None:
+    """Read 2023+-format Estabelecimentos shard-by-shard, write to parquet
+    incrementally to avoid OOM on concat."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
     outer_zip = DATA_DIR / f"{snapshot_dir}.zip"
-    parts = []
+    writer = None
+    total_rows = 0
 
     with zipfile.ZipFile(outer_zip, "r") as outer:
         shard_names = sorted(
@@ -189,27 +216,23 @@ def _read_new(snapshot_dir: str) -> pd.DataFrame:
 
         for shard_name in shard_names:
             print(f"    reading {shard_name} ...", end=" ", flush=True)
-            with outer.open(shard_name) as shard_f:
-                with zipfile.ZipFile(io.BytesIO(shard_f.read()), "r") as shard:
-                    csv_name = shard.namelist()[0]
-                    with shard.open(csv_name) as csv_f:
-                        chunk = pd.read_csv(
-                            csv_f, sep=";", header=None,
-                            names=COLS_NEW, dtype=str,
-                            low_memory=False, encoding="latin-1",
-                        )
-            parts.append(chunk)
-            print(f"{len(chunk):,} rows")
+            chunk = _read_new_shard(outer, shard_name)
+            print(f"{len(chunk):,} rows ...", end=" ", flush=True)
 
-    df = pd.concat(parts, ignore_index=True)
+            chunk = _normalize(chunk, snapshot_label)
+            table = pa.Table.from_pandas(chunk, preserve_index=False)
 
-    # Build full 14-digit CNPJ from base + ordem + dv
-    df["cnpj_base"] = df["cnpj_base"].str.strip().str.strip('"').str.zfill(8)
-    df["cnpj_ordem"] = df["cnpj_ordem"].str.strip().str.strip('"').str.zfill(4)
-    df["cnpj_dv"] = df["cnpj_dv"].str.strip().str.strip('"').str.zfill(2)
-    df["cnpj"] = df["cnpj_base"] + df["cnpj_ordem"] + df["cnpj_dv"]
+            if writer is None:
+                writer = pq.ParquetWriter(out_path, table.schema)
+            writer.write_table(table)
 
-    return df
+            total_rows += len(chunk)
+            print("written", flush=True)
+            del chunk, table  # free memory
+
+    if writer is not None:
+        writer.close()
+    print(f"  Total: {total_rows:,} rows to {out_path.name}")
 
 
 def _normalize(df: pd.DataFrame, snapshot_label: str) -> pd.DataFrame:
@@ -271,19 +294,19 @@ def process_snapshot(snapshot_dir: str, force: bool = False) -> None:
 
     print(f"Processing {snapshot_dir} ({label}) ...")
 
-    if snapshot_dir in SQLITE_SNAPSHOTS:
-        df = _read_sqlite(snapshot_dir)
-    elif snapshot_dir == "201812":
-        df = _read_2018(snapshot_dir)
-    else:
-        df = _read_new(snapshot_dir)
-
-    df = _normalize(df, label)
-
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(out_path, index=False, engine="pyarrow")
 
-    print(f"  Wrote {len(df):,} rows to {out_path.name}")
+    if snapshot_dir not in SQLITE_SNAPSHOTS and snapshot_dir != "201812":
+        # 2023+ format: process shard-by-shard to avoid OOM
+        _process_new_incremental(snapshot_dir, label, out_path)
+    else:
+        if snapshot_dir in SQLITE_SNAPSHOTS:
+            df = _read_sqlite(snapshot_dir)
+        else:
+            df = _read_2018(snapshot_dir)
+        df = _normalize(df, label)
+        df.to_parquet(out_path, index=False, engine="pyarrow")
+        print(f"  Wrote {len(df):,} rows to {out_path.name}")
     print(f"  File size: {out_path.stat().st_size / 1e6:.1f} MB")
 
 
