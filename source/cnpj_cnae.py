@@ -47,44 +47,66 @@ def _read_sqlite(snapshot_dir: str) -> pd.DataFrame:
     import subprocess
     import tempfile
 
-    outer_zip = DATA_DIR / SQLITE_ZIP
-    with tempfile.TemporaryDirectory() as tmp:
-        print("  Extracting SQLite DB (19 GB) ...", flush=True)
-        subprocess.run(
-            ["unzip", "-o", str(outer_zip), SQLITE_DB_NAME, "-d", tmp],
-            check=True, capture_output=True,
-        )
-        db_path = Path(tmp) / SQLITE_DB_NAME
+    extracted_db = DATA_DIR / SQLITE_DB_NAME
+    if extracted_db.exists():
+        db_path = extracted_db
+        print(f"  Using existing DB at {db_path}", flush=True)
+    else:
+        outer_zip = DATA_DIR / SQLITE_ZIP
+        with tempfile.TemporaryDirectory() as tmp:
+            print("  Extracting SQLite DB (19 GB) ...", flush=True)
+            subprocess.run(
+                ["unzip", "-o", str(outer_zip), SQLITE_DB_NAME, "-d", tmp],
+                check=True, capture_output=True,
+            )
+            db_path = Path(tmp) / SQLITE_DB_NAME
 
-        print("  Querying cnaes_secundarios ...", flush=True)
-        conn = sqlite3.connect(str(db_path))
-        df = pd.read_sql_query(
-            "SELECT * FROM cnaes_secundarios", conn, dtype=str,
-        )
-        conn.close()
-        print(f"  {len(df):,} rows from SQLite")
+    print("  Querying cnaes_secundarios ...", flush=True)
+    conn = sqlite3.connect(str(db_path))
+    df = pd.read_sql_query(
+        "SELECT * FROM cnaes_secundarios", conn, dtype=str,
+    )
+    conn.close()
+    print(f"  {len(df):,} rows from SQLite")
 
     df.columns = [c.strip().lower() for c in df.columns]
 
-    cnpj_col = df.columns[0]
-    cnae_cols = [c for c in df.columns if c != cnpj_col]
+    # DB may be long format (cnpj, cnae_ordem, cnae) or wide format
+    if "cnae" in df.columns and "cnpj" in df.columns:
+        # Already long format — just clean
+        df["cnpj"] = df["cnpj"].str.strip().str.zfill(14)
+        df["cnae"] = df["cnae"].astype(str).str.strip()
+        df = df[
+            df["cnae"].notna()
+            & (df["cnae"] != "")
+            & (df["cnae"] != "nan")
+            & (df["cnae"] != "0000000")
+            & (df["cnae"].str.len() >= 5)
+        ]
+        df["cnpj_base"] = df["cnpj"].str[:8]
+        result = df[["cnpj", "cnpj_base", "cnae"]]
+    else:
+        # Wide format — melt
+        cnpj_col = df.columns[0]
+        cnae_cols = [c for c in df.columns if c != cnpj_col]
 
-    # Vectorized melt
-    df[cnpj_col] = df[cnpj_col].str.strip().str.zfill(14)
-    melted = df.melt(id_vars=[cnpj_col], value_vars=cnae_cols, value_name="cnae")
-    melted = melted.drop(columns=["variable"])
-    melted = melted.rename(columns={cnpj_col: "cnpj"})
-    melted["cnae"] = melted["cnae"].astype(str).str.strip()
-    melted = melted[
-        melted["cnae"].notna()
-        & (melted["cnae"] != "")
-        & (melted["cnae"] != "nan")
-        & (melted["cnae"] != "0000000")
-        & (melted["cnae"].str.len() >= 5)
-    ]
-    melted["cnpj_base"] = melted["cnpj"].str[:8]
-    print(f"  {len(melted):,} CNAE entries from SQLite")
-    return melted
+        df[cnpj_col] = df[cnpj_col].str.strip().str.zfill(14)
+        melted = df.melt(id_vars=[cnpj_col], value_vars=cnae_cols, value_name="cnae_val")
+        melted = melted.drop(columns=["variable"])
+        melted = melted.rename(columns={cnpj_col: "cnpj", "cnae_val": "cnae"})
+        melted["cnae"] = melted["cnae"].astype(str).str.strip()
+        melted = melted[
+            melted["cnae"].notna()
+            & (melted["cnae"] != "")
+            & (melted["cnae"] != "nan")
+            & (melted["cnae"] != "0000000")
+            & (melted["cnae"].str.len() >= 5)
+        ]
+        melted["cnpj_base"] = melted["cnpj"].str[:8]
+        result = melted
+
+    print(f"  {len(result):,} CNAE entries from SQLite")
+    return result
 
 
 def _read_2018(snapshot_dir: str) -> pd.DataFrame:

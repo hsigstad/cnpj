@@ -137,43 +137,80 @@ def _read_2018(snapshot_dir: str) -> pd.DataFrame:
     return df
 
 
-def _read_sqlite(snapshot_dir: str) -> pd.DataFrame:
-    """Read estabelecimento records from SQLite DB (~Jan 2020)."""
-    import sqlite3
+def _get_sqlite_path() -> Path:
+    """Resolve SQLite DB path (already extracted or from zip)."""
+    extracted_db = DATA_DIR / SQLITE_DB_NAME
+    if extracted_db.exists():
+        print(f"  Using existing DB at {extracted_db}", flush=True)
+        return extracted_db
+
     outer_zip = DATA_DIR / SQLITE_ZIP
-    with tempfile.TemporaryDirectory() as tmp:
-        print("  Extracting SQLite DB (19 GB) ...", flush=True)
-        subprocess.run(
-            ["unzip", "-o", str(outer_zip), SQLITE_DB_NAME, "-d", tmp],
-            check=True, capture_output=True,
-        )
-        db_path = Path(tmp) / SQLITE_DB_NAME
+    tmp_dir = tempfile.mkdtemp()
+    print("  Extracting SQLite DB (19 GB) ...", flush=True)
+    subprocess.run(
+        ["unzip", "-o", str(outer_zip), SQLITE_DB_NAME, "-d", tmp_dir],
+        check=True, capture_output=True,
+    )
+    return Path(tmp_dir) / SQLITE_DB_NAME
 
-        print("  Querying empresas ...", flush=True)
-        conn = sqlite3.connect(str(db_path))
-        df = pd.read_sql_query(
-            "SELECT cnpj, matriz_filial, nome_fantasia, "
-            "situacao, data_situacao, motivo_situacao, "
-            "data_inicio_ativ, cnae_fiscal, "
-            "logradouro, numero, bairro, cep, uf, "
-            "cod_municipio, municipio "
-            "FROM empresas",
-            conn, dtype=str,
-        )
-        conn.close()
-        print(f"  {len(df):,} rows from SQLite")
 
-    df.columns = [c.strip().lower() for c in df.columns]
-    df["cnpj"] = df["cnpj"].str.zfill(14)
-    df["cnpj_base"] = df["cnpj"].str[:8]
+def _process_sqlite_incremental(snapshot_dir: str, snapshot_label: str,
+                                 out_path: Path) -> None:
+    """Read estabelecimento from SQLite in chunks, write parquet incrementally."""
+    import sqlite3
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    db_path = _get_sqlite_path()
+
+    query = (
+        "SELECT cnpj, matriz_filial, nome_fantasia, "
+        "situacao, data_situacao, motivo_situacao, "
+        "data_inicio_ativ, cnae_fiscal, "
+        "logradouro, numero, bairro, cep, uf, "
+        "cod_municipio, municipio "
+        "FROM empresas"
+    )
+
+    print("  Querying empresas in chunks ...", flush=True)
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.execute(query)
+    col_names = [desc[0].strip().lower() for desc in cursor.description]
 
     rename = {
         "situacao": "situacao_cadastral",
         "data_inicio_ativ": "data_inicio",
         "cnae_fiscal": "cnae_principal",
     }
-    df = df.rename(columns=rename)
-    return df
+
+    writer = None
+    total_rows = 0
+    chunk_size = 2_000_000
+
+    while True:
+        rows = cursor.fetchmany(chunk_size)
+        if not rows:
+            break
+
+        df = pd.DataFrame(rows, columns=col_names, dtype=str)
+        df["cnpj"] = df["cnpj"].str.zfill(14)
+        df["cnpj_base"] = df["cnpj"].str[:8]
+        df = df.rename(columns=rename)
+        df = _normalize(df, snapshot_label)
+
+        table = pa.Table.from_pandas(df, preserve_index=False)
+        if writer is None:
+            writer = pq.ParquetWriter(out_path, table.schema)
+        writer.write_table(table)
+
+        total_rows += len(df)
+        print(f"    chunk: {len(df):,} rows (total: {total_rows:,})", flush=True)
+        del df, table
+
+    conn.close()
+    if writer is not None:
+        writer.close()
+    print(f"  Total: {total_rows:,} rows to {out_path.name}")
 
 
 def _read_new_shard(outer: zipfile.ZipFile, shard_name: str) -> pd.DataFrame:
@@ -297,14 +334,14 @@ def process_snapshot(snapshot_dir: str, force: bool = False) -> None:
 
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
 
-    if snapshot_dir not in SQLITE_SNAPSHOTS and snapshot_dir != "201812":
+    if snapshot_dir in SQLITE_SNAPSHOTS:
+        # SQLite: process in chunks to avoid OOM
+        _process_sqlite_incremental(snapshot_dir, label, out_path)
+    elif snapshot_dir != "201812":
         # 2023+ format: process shard-by-shard to avoid OOM
         _process_new_incremental(snapshot_dir, label, out_path)
     else:
-        if snapshot_dir in SQLITE_SNAPSHOTS:
-            df = _read_sqlite(snapshot_dir)
-        else:
-            df = _read_2018(snapshot_dir)
+        df = _read_2018(snapshot_dir)
         df = _normalize(df, label)
         df.to_parquet(out_path, index=False, engine="pyarrow")
         print(f"  Wrote {len(df):,} rows to {out_path.name}")

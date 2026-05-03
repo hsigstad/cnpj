@@ -132,22 +132,30 @@ def _read_sqlite(snapshot_dir: str) -> pd.DataFrame:
     Extracts the 19 GB DB to a temp directory, queries it, then deletes.
     Same column layout as 2018 CSV format (full 14-digit CNPJ).
     """
-    outer_zip = DATA_DIR / SQLITE_ZIP
-
-    # Extract DB to temp (19 GB uncompressed, stored without compression)
-    with tempfile.TemporaryDirectory() as tmp:
-        print("  Extracting SQLite DB (19 GB) ...", flush=True)
-        subprocess.run(
-            ["unzip", "-o", str(outer_zip), SQLITE_DB_NAME, "-d", tmp],
-            check=True, capture_output=True,
-        )
-        db_path = Path(tmp) / SQLITE_DB_NAME
-
-        print("  Querying socios table ...", flush=True)
+    # Use already-extracted DB if available, otherwise extract from zip
+    extracted_db = DATA_DIR / SQLITE_DB_NAME
+    if extracted_db.exists():
+        db_path = extracted_db
+        print(f"  Using existing DB at {db_path}", flush=True)
         conn = sqlite3.connect(str(db_path))
         df = pd.read_sql_query("SELECT * FROM socios", conn, dtype=str)
         conn.close()
         print(f"  {len(df):,} rows from SQLite")
+    else:
+        outer_zip = DATA_DIR / SQLITE_ZIP
+        with tempfile.TemporaryDirectory() as tmp:
+            print("  Extracting SQLite DB (19 GB) ...", flush=True)
+            subprocess.run(
+                ["unzip", "-o", str(outer_zip), SQLITE_DB_NAME, "-d", tmp],
+                check=True, capture_output=True,
+            )
+            db_path = Path(tmp) / SQLITE_DB_NAME
+
+            print("  Querying socios table ...", flush=True)
+            conn = sqlite3.connect(str(db_path))
+            df = pd.read_sql_query("SELECT * FROM socios", conn, dtype=str)
+            conn.close()
+            print(f"  {len(df):,} rows from SQLite")
 
     # Column names match 2018 CSV format
     df.columns = [c.strip().lower() for c in df.columns]
