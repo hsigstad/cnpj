@@ -6,7 +6,7 @@
   - 2023+ uses separate sharded CSVs (Empresas0-9, Socios0-9,
     Estabelecimentos0-9), semicolon-delimited, no header, 8-digit
     CNPJ base. 2018 uses single CSV with header, comma-delimited,
-    14-digit CNPJ. first-version snapshot is SQLite DB (~Jan 2020).
+    14-digit CNPJ. First-version snapshot is SQLite DB (~Jan 2020).
   - completed: 2026-03-26
 
 - [x] Build socio.py — all 5 snapshots complete

@@ -1,5 +1,11 @@
 """Parse sócio (partner/owner) records from CNPJ bulk snapshots.
 
+INTENT: Sócio layout differs across snapshots (a 2018 CSV, a 202001 SQLite DB,
+and 2023+ sharded CSVs) in columns, delimiter, and CNPJ width. Each read path
+normalises to a common schema, one parquet per snapshot.
+
+SOURCE: Receita Federal CNPJ open-data bulk downloads in $DATA_DIR/cnpj/.
+
 Handles three formats:
 - 2018: single CSV with header, comma-delimited, full 14-digit CNPJ
 - 202001: SQLite DB (first_version.zip) — estimated Jan 2020
@@ -145,11 +151,13 @@ def _read_sqlite(snapshot_dir: str) -> pd.DataFrame:
         outer_zip = DATA_DIR / SQLITE_ZIP
         with tempfile.TemporaryDirectory() as tmp:
             print("  Extracting SQLite DB (19 GB) ...", flush=True)
+            with zipfile.ZipFile(outer_zip) as _z:
+                member = next(n for n in _z.namelist() if n.endswith(".db"))
             subprocess.run(
-                ["unzip", "-o", str(outer_zip), SQLITE_DB_NAME, "-d", tmp],
+                ["unzip", "-o", str(outer_zip), member, "-d", tmp],
                 check=True, capture_output=True,
             )
-            db_path = Path(tmp) / SQLITE_DB_NAME
+            db_path = Path(tmp) / member
 
             print("  Querying socios table ...", flush=True)
             conn = sqlite3.connect(str(db_path))

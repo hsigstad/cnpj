@@ -1,5 +1,11 @@
 """Parse secondary CNAE codes per CNPJ from bulk snapshots.
 
+INTENT: Secondary CNAEs are stored differently across snapshots (a dedicated
+CSV, a SQLite table, and a semicolon-packed field on Estabelecimentos). Each
+read path explodes them to one row per (cnpj, cnae), one parquet per snapshot.
+
+SOURCE: Receita Federal CNPJ open-data bulk downloads in $DATA_DIR/cnpj/.
+
 Handles two formats:
 - 2018: cnaes_secundarios.zip with CSV
 - 2023+: cnae_secundario field within Estabelecimentos (semicolon-separated
@@ -55,11 +61,13 @@ def _read_sqlite(snapshot_dir: str) -> pd.DataFrame:
         outer_zip = DATA_DIR / SQLITE_ZIP
         with tempfile.TemporaryDirectory() as tmp:
             print("  Extracting SQLite DB (19 GB) ...", flush=True)
+            with zipfile.ZipFile(outer_zip) as _z:
+                member = next(n for n in _z.namelist() if n.endswith(".db"))
             subprocess.run(
-                ["unzip", "-o", str(outer_zip), SQLITE_DB_NAME, "-d", tmp],
+                ["unzip", "-o", str(outer_zip), member, "-d", tmp],
                 check=True, capture_output=True,
             )
-            db_path = Path(tmp) / SQLITE_DB_NAME
+            db_path = Path(tmp) / member
 
     print("  Querying cnaes_secundarios ...", flush=True)
     conn = sqlite3.connect(str(db_path))

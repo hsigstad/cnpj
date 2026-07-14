@@ -1,5 +1,12 @@
 """Parse estabelecimento (branch/establishment) records from CNPJ snapshots.
 
+INTENT: Branch records arrive in incompatible layouts across snapshots (a
+combined single-row CSV, a SQLite DB, and per-table CSVs). Each read path
+extracts the branch-level columns and normalises to one schema, one parquet
+per snapshot.
+
+SOURCE: Receita Federal CNPJ open-data bulk downloads in $DATA_DIR/cnpj/.
+
 Handles two formats:
 - 2018: combined CSV → extract branch-level columns (address, CNAE, situação)
 - 2023+: separate Estabelecimentos files with 30 columns
@@ -147,11 +154,13 @@ def _get_sqlite_path() -> Path:
     outer_zip = DATA_DIR / SQLITE_ZIP
     tmp_dir = tempfile.mkdtemp()
     print("  Extracting SQLite DB (19 GB) ...", flush=True)
+    with zipfile.ZipFile(outer_zip) as _z:
+        member = next(n for n in _z.namelist() if n.endswith(".db"))
     subprocess.run(
-        ["unzip", "-o", str(outer_zip), SQLITE_DB_NAME, "-d", tmp_dir],
+        ["unzip", "-o", str(outer_zip), member, "-d", tmp_dir],
         check=True, capture_output=True,
     )
-    return Path(tmp_dir) / SQLITE_DB_NAME
+    return Path(tmp_dir) / member
 
 
 def _process_sqlite_incremental(snapshot_dir: str, snapshot_label: str,

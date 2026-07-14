@@ -1,6 +1,6 @@
 # Decisions
 
-## 2026-03-26 — first-version snapshot is ~Jan 2020, not Dec 2018
+## 2026-03-26 — First-version snapshot is ~Jan 2020, not Dec 2018
 
 **Decision:** The `first_version.zip` (19 GB SQLite DB)
 is a separate snapshot from `201812.zip`, not a duplicate.
